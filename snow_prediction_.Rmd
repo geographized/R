@@ -1,0 +1,737 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+always_allow_html: true
+---
+# Snowfall prediction with machine learning methods
+
+The project aims to apply selected machine learning methods to the classification problem. <br>
+After analyzing meteorological data collected for Cracow, Poland, a classification will be conducted to determine whether snowfall is expected on a given day in November. The project includes machine learning techniques like Logistic Regression, Decision Tree, and Support Vector Machines, with their outcomes evaluated against each other. Additionally, the interpretability of Logistic Regression will be scrutinized.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(ingredients)
+library(glmnet)
+library(DALEX)
+library(gridExtra)
+library(ggplot2)
+library(corrplot)
+library(pROC)
+library(ipred)
+library(rpart)
+library(randomForest)
+library(readr)
+library(tidyverse)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(ipred)
+library('e1071') 
+library(glmnet)
+library(dplyr)
+library(gbm)
+library(ROSE)
+library(rmarkdown)
+library(kableExtra)
+```
+
+```{r, include=FALSE}
+data_snow <- read.csv("Krakow_11_snieg_en.csv")
+```
+
+### Data Exploration 
+
+The data used in the task was collected from a public dataset provided by IMGW (Polish Institute of Meteorology and Water Management). The observations come from the synoptic station number 350190566, located at Cracow Balice Airport, which is the main station gathering information about weather conditions in Cracow. Measurements are taken daily and collected for one month - November, over the years 2010 - 2023, in total 420 days.
+
+The dataset provided by IMGW includes all parameters of atmospheric conditions recorded at meteorological stations. The data has been cleaned of unnecessary variables, such as: the duration of sleet or the occurrence of lightning, as these phenomena, even over several years, are recorded too rarely to have a significant impact on the study.
+Variables that are not considered fundamental atmospheric phenomena have been also removed, such as minimum ground temperature or ground state, as their influence on the weather forecasting model will not be practical.
+
+```{r, echo=FALSE}
+f <- function() {
+  paged_table(data_snow)
+}
+
+f()
+```
+
+Variables description:
+
+- `cloudiness`:  degree of  sky covered by clouds on a scale of 0-8, where 0 indicates  no clouds and 8 indicates sky completely covered by clouds
+
+- `wind`: average daily wind speed in m/s
+
+- `temperature_min`: maximum daily air temperature in Celsius degrees 
+
+- `temperature_max`: minimum daily air temperature in Celsius degrees 
+
+- `temperature`: average daily air temperature in Celsius degrees 
+
+- `humidity`: average air water vapor content in %
+
+- `pressure`: average daily pressure in hPa
+
+- `dew`: time of dew occurrence within a day in hours
+
+- `frost`: time of frost occurrence within a day in hours
+
+- `fog`: time of fog occurrence within a day in hours, where fog is a suspension of small water droplets in the lower layer of air reducing visibility to 1 km
+
+- `mist`: time of mist occurrence within a day in hours, where mist is a suspension of small water droplets in the lower layer of air reducing visibility to 1 - 10 km
+
+- `haze`: time of haze occurrence within a day in hours, where haze is a suspension of dust and atmospheric aerosols limiting visibility
+
+- `wind10`: time of wind speed exceeding 10 m/s within a day in hours
+
+- `snow`: amount of daily snowfall in mm
+
+- `snow_cover`: height of snow cover in cm
+
+- `rain`: amount of daily rainfall in mm
+
+```{r, include=FALSE}
+data_snow$dew_01 <- ifelse(as.numeric(data_snow$dew) >= 0.5, 1, 0)
+data_snow$frost_01 <- ifelse(as.numeric(data_snow$frost) >= 0.5, 1, 0)
+data_snow$fog_01 <- ifelse(as.numeric(data_snow$fog) >= 0.5, 1, 0)
+data_snow$wind10_01 <- ifelse(as.numeric(data_snow$wind10) >= 0.5, 1, 0)
+data_snow$snow_cover_01 <- ifelse(as.numeric(data_snow$snow_cover) >= 0.1, 1, 0)
+data_snow$rain_01 <- ifelse(as.numeric(data_snow$rain) >= 0.5, 1, 0)
+data_snow$haze_01 <- ifelse(as.numeric(data_snow$haze) >= 0.5, 1, 0)
+data_snow$mist_01 <- ifelse(as.numeric(data_snow$mist) >= 0.5, 1, 0)
+data_snow$snow_prediction <- ifelse(as.numeric(data_snow$snow) >= 0.1, 1, 0)
+```
+
+For data analysis and extraction of endogenous variables, binary values were assigned to the following variables: `dew`, `frost`, `fog`, `wind10`, `snow_cover`, `rain`, `haze`, and `mist`.  A value of 1 is assigned to these variables if their duration exceeds 30 minutes during the day, except for snow cover, which takes a value of 1 after reaching 10 mm of snow cover during the day. These binary values are named accordingly: `dew_01`, `frost_01`, `fog_01`, `wind10_01`, `snow_cover_01`, `rain_01`, `haze_01`, and `mist_01`.
+
+The exogenous variable is `snow_prediction`, which takes a value of 1 in case of snow occurrence more than 0.1 hour during the day.
+
+```{r, echo=FALSE}
+createDataSnow <- function() {
+
+  data_snow$cloudiness <- as.numeric(data_snow$cloudiness)
+  data_snow$wind <- as.numeric(data_snow$wind)
+  data_snow$temperature <- as.numeric(data_snow$temperature)
+  data_snow$temperature_min <- as.numeric(data_snow$temperature_min)
+  data_snow$temperature_max <- as.numeric(data_snow$temperature_max)
+  data_snow$humidity <- as.numeric(data_snow$humidity)
+  data_snow$pressure <- as.numeric(data_snow$pressure)
+  
+  data_snow$dew_01 <- factor(as.factor(data_snow$dew_01), levels=c(0,1), labels=c('Deficit','Dew'))
+  data_snow$frost_01 <- factor(as.factor(data_snow$frost_01), levels=c(0,1), labels=c('Deficit','Frost'))
+  data_snow$fog_01 <- factor(as.factor(data_snow$fog_01), levels=c(0,1), labels=c('Deficit','Fog'))
+  data_snow$wind10_01 <- factor(as.factor(data_snow$wind10_01), levels=c(0,1), labels=c('Deficit','Wind_above_10m/s'))
+  data_snow$snow_cover_01 <- factor(as.factor(data_snow$snow_cover_01), levels=c(0,1), labels=c('Deficit','Snow_cover'))
+  data_snow$rain_01 <- factor(as.factor(data_snow$rain_01), levels=c(0,1), labels=c('Deficit','Rain'))
+  data_snow$haze_01 <- factor(as.factor(data_snow$haze_01), levels=c(0,1), labels=c('Deficit','Haze'))
+  data_snow$mist_01 <- factor(as.factor(data_snow$mist_01), levels=c(0,1), labels=c('Deficit','Mist'))
+  data_snow$snow_prediction <- factor(as.factor(data_snow$snow_prediction), levels=c(0,1), labels=c('Deficit','Snow'))
+
+  return(data_snow)
+}
+
+data_snow <- createDataSnow()
+
+```
+
+```{r, include=FALSE}
+data_snow<- subset(data_snow, select = -c(id, city, year, month, day, dew, frost, fog, mist, haze, mist, wind10, snow, snow_cover, rain))
+colnames(data_snow)
+```
+
+```{r, echo=FALSE}
+data_snow %>%
+  keep(is.numeric) %>%
+  summary()
+```
+```{r, echo=FALSE}
+data_snow %>%
+  keep(is.factor) %>%
+  summary()
+```
+
+```{r, include=FALSE}
+data_snow <-data_snow %>%
+  mutate(temperature_min = ifelse(is.na(temperature_min), mean(temperature_min, na.rm = TRUE), temperature_min))
+```
+Missing data values were replaced with their mean.
+```{r, echo=FALSE}
+data_snow %>%
+  keep(is.numeric) %>%
+  summary()
+```
+The exogenous variable is indicating the occurrence of snowfall. Snow is characteristic only for specific atmospheric conditions, which may facilitate finding relationships and the accuracy of models. The following charts illustrate the ratio of days with the occurrence of selected atmospheric phenomena to days without their occurrence in the analyzed dataset. Snow does not occur as often as fog or rain, but it is a more common phenomenon than haze or wind blowing faster than 10m/s.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+categorical_vars <- c("snow_prediction", "mist_01", "rain_01", "wind10_01", "haze_01")
+
+gp_categorical <- lapply(categorical_vars, function(x) { 
+  ggplot(data = data_snow, aes_string(x = x)) + 
+    geom_bar() + 
+    labs(title = paste(x, "distribution"), x = x, y = 'Number of days')
+})
+
+num_plots <- length(gp_categorical)
+num_cols <- 2
+num_rows <- ceiling(num_plots / num_cols)
+
+chunks_categorical <- split(gp_categorical, rep(1:num_rows, each = num_cols, length.out = num_plots))
+
+grob_plots_categorical <- lapply(chunks_categorical, function(chunk) {
+  marrangeGrob(grobs = lapply(chunk, ggplotGrob), nrow = 1, ncol = num_cols)
+})
+
+invisible(print(grob_plots_categorical))
+```
+
+The analysis of binary variables and their relationship to the dependent variable was run using the Chi-square independence test. Setting hypotheses for the variable `rain_01`:
+
+*H0: Snowfall is not dependent on the occurrence of rainfall.*
+
+*H1: Snowfall is dependent on the occurrence of rainfall.*
+
+Similarly, the same procedure was applied to the other categorical variables. The tests revealed that variables:`wind10_01`, `haze_01` and `mist_01` are not statistically significant. This might be due to the very rare occurrence of wind above 10m/s and haze over the years. On the other hand, mist occurs frequently enough that it does not distinctly define the occurrence of snowfall.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+chi_results <- c(
+  chisq.test(data_snow$rain_01, data_snow$snow_prediction)$p.value,
+  chisq.test(data_snow$dew_01, data_snow$snow_prediction)$p.value,
+  chisq.test(data_snow$frost_01, data_snow$snow_prediction)$p.value,
+  chisq.test(data_snow$fog_01, data_snow$snow_prediction)$p.value,
+  chisq.test(data_snow$wind10_01, data_snow$snow_prediction)$p.value,
+  chisq.test(data_snow$snow_cover_01, data_snow$snow_prediction)$p.value,
+  chisq.test(data_snow$haze_01, data_snow$snow_prediction)$p.value,
+  chisq.test(data_snow$mist_01, data_snow$snow_prediction)$p.value
+)
+```
+
+```{r, echo=FALSE}
+chi_results <- data.frame(chi_results)
+chi_results <- t(chi_results)
+colnames(chi_results) <- c("rain_01", "dew_01", "frost_01", "fog_01", "wind10_01", "snow_cover_01", "haze_01", "mist_01")
+rownames(chi_results) <- c("p-value")
+
+pvalue_results <- head(chi_results)
+
+knitr::kable(pvalue_results, 
+             align = "cccccccc",
+             caption = "P-values from a Chi-square test on categorical variables",
+             digits = 3) %>%
+kable_styling(latex_options = "striped", full_width = F) %>%
+column_spec(1, width = "8cm") %>% 
+column_spec(2, width = "6cm") %>%
+column_spec(3, width = "6cm") %>%
+column_spec(4, width = "6cm") %>%
+column_spec(5, width = "6cm") %>%
+column_spec(6, width = "6cm") %>%
+column_spec(7, width = "6cm") %>%
+column_spec(8, width = "6cm")
+```
+
+The following graph depicts a visualization of the correlation relationships between variables. Based on the graph, it is observable that humidity is positively correlated with cloudiness, wind is positively correlated with cloudiness.
+
+On the other hand, maximum temperature is negatively correlated with cloudiness, maximum temperature is negatively correlated with humidity, and humidity is negatively correlated with wind.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE,results='hide'}
+correlation_matrix <- cor(data_snow[,c( "cloudiness", "wind", "temperature", "humidity", "pressure", "temperature_max")])
+
+print(correlation_matrix)
+
+corrplot(correlation_matrix, method = "circle")
+```
+
+Visualizing the significance of predictors is possible through box plots and density plots. These plots help to understand the alignment of numerical variable values with the predicted variable of snowfall. 
+
+In the box plots, variables such as pressure and humidity were not significantly different between the distribution with snowfall and without snowfall.
+Box plots for weather variables such as temperature, minimum temperature, maximum temperature, wind, and cloudiness show significant differences in relation to the dependent variable. For instance, the box plot for average wind speed shows a higher median and wider range of wind speed values on days with snowfall.
+
+Also, density plots showed that humidity and pressure do not exhibit significant differences on days with snowfall compared to days without snowfall. As a result, these variables will not be taken into account during model creation. To avoid duplicating several variables describing the same atmospheric phenomenon, average daily temperature has been chosen, defined as the variable temperature. It exhibits the greatest variability in the density plot between days with and without snowfall.
+
+
+```{r, echo=FALSE, message=FALSE, results='hide', warning=FALSE}
+numeric_vars <- c("temperature", "temperature_min", "temperature_max", "humidity", "pressure", "cloudiness", "wind")
+
+gp_numeric <- lapply(numeric_vars, function(var) {
+  data_snow %>%
+    filter(!is.na(!!sym(var))) %>%
+    ggplot(aes_string(x = "snow_prediction", y = var)) +
+    geom_boxplot(fill = 'red', alpha = 0.7) +
+    scale_y_continuous(name = switch(var,
+                                      "temperature" = "Average daily temperature",
+                                      "temperature_min" = "Average daily minimum temperature",
+                                      "temperature_max" = "Average daily maximum temperature",
+                                      "humidity" = "Humidity",
+                                      "pressure" = "Pressure",
+                                      "cloudiness" = "Cloudiness",
+                                      "wind" = "Wind"),
+                      breaks = switch(var,
+                                      "temperature" = seq(-15, 20, 5),
+                                      "temperature_min" = seq(-15, 20, 5),
+                                      "temperature_max" = seq(-15, 20, 5),
+                                      "humidity" = seq(20, 100, 20),
+                                      "pressure" = seq(900, 1050, 50),
+                                      "cloudiness" = seq(0, 8, 2),
+                                      "wind" = seq(0, 15, 5)),
+                      limits = switch(var,
+                                      "temperature" = c(-15, 20),
+                                      "temperature_min" = c(-15, 20),
+                                      "temperature_max" = c(-15, 20),
+                                      "humidity" = c(20, 100),
+                                      "pressure" = c(900, 1050),
+                                      "cloudiness" = c(0, 9),
+                                      "wind" = c(0, 15))) +
+    scale_x_discrete(name = "Is it snowing?") +
+    ggtitle("") +
+    theme_bw()
+})
+
+chunks_numeric <- split(gp_numeric, ceiling(seq_along(gp_numeric) / 2))  # Split plots into chunks of 4
+
+grob_plots_numeric <- lapply(chunks_numeric, function(chunk) {
+  marrangeGrob(grobs = lapply(chunk, ggplotGrob), nrow = 1, ncol = 2)
+})
+
+invisible(print(grob_plots_numeric))
+```
+```{r, echo=FALSE, message=FALSE, results='hide'}
+numeric_vars <- c("temperature", "temperature_min", "temperature_max", "humidity", "pressure", "cloudiness", "wind")
+
+gp <- lapply(numeric_vars, function(x) { 
+  ggplot(data = data_snow, aes(x = !!sym(x), col = snow_prediction)) + 
+    geom_density() + 
+    xlab(x) + 
+    ggtitle(paste(x, "density", sep = " "))
+})
+
+chunks <- split(gp, ceiling(seq_along(gp) / 4))  # Split plots into chunks of 4
+
+grob_plots <- lapply(chunks, function(chunk) {
+  marrangeGrob(grobs = lapply(chunk, ggplotGrob), nrow = 2, ncol = 2)
+})
+
+invisible(print(grob_plots))
+```
+
+
+The variables included in the model after data exploration:
+```{r, include=FALSE}
+data_snow<- subset(data_snow, select = -c(temperature_max, temperature_min, pressure, humidity, wind10_01, mist_01, haze_01))
+colnames(data_snow)
+```
+
+```{r, echo=FALSE}
+f_2 <- function() {
+  paged_table(head(data_snow, 5))
+}
+
+f_2()
+```
+
+### Training and testing set 
+
+```{r, echo=FALSE}
+numbers <- table(data_snow$snow_prediction)
+share <- prop.table(numbers) * 100
+
+cat("Number of positive observations (snow):", numbers["Snow"], "\n")
+cat("Number of negative observations (deficit):", numbers["Deficit"], "\n")
+cat("Percentage of positive observations (snow):", share["Snow"], "%\n") 
+cat("Percentage of negative observations (deficit):", share["Deficit"], "%\n")
+```
+Division into training and testing set in the ratio of 70:30.
+```{r, echo=FALSE}
+set.seed(1234)
+sample_set <- sample(nrow(data_snow), round(nrow(data_snow)*.70), replace = FALSE)
+data_train <- data_snow[sample_set, ]
+data_test <- data_snow[-sample_set, ]
+```
+
+Training set:
+```{r, echo=FALSE}
+table(data_train$snow_prediction)
+```
+
+Testing set:
+```{r, echo=FALSE}
+table(data_test$snow_prediction)
+```
+Standardization was performed on the data. 
+```{r, include=FALSE}
+normalize <- function(x){
+  return((x-min(x))/(max(x)-min(x)))
+}
+
+data_train <- data_train %>%
+  mutate(cloudiness = normalize(cloudiness)) %>%
+  mutate(wind = normalize(wind)) %>%
+  mutate(temperature = normalize(temperature))
+```
+
+```{r, echo=FALSE}
+data_train %>%
+  keep(is.numeric) %>%
+  summary()
+```
+It has been observed that the share of the positive class is greater than the negative class. In order to balance the data set, oversampling was performed on the training set. The share of observations is the same in the positive and negative class now.
+
+Oversampled training set: 
+```{r, echo=FALSE}
+oversampled_data_train <- ovun.sample(snow_prediction ~ ., data = data_train, method = "over", N = 2*nrow(subset(data_train, data_train$snow_prediction == "Deficit")))$data
+table(oversampled_data_train$snow_prediction)
+```
+### Logistic regression
+One of the statistical regression methods suitable for situations where the dependent variable is dichotomous (i.e., it takes on only two possible values) is logistic regression.
+
+An analysis of the model's coefficients reveals insights into how each explanatory variable influences the likelihood of an outcome. For instance, for the variable cloudiness, the odds of snowfall increase by a factor of 1.3629 with each additional day, assuming all other factors remain constant (ceteris paribus).
+
+In terms of performance, the model exhibits better accuracy on the training dataset. The highest metric achieved is specificity, with a value of 0.98 for the training set. This indicates a high probability that the model will correctly classify cases as negative when they truly are negative.
+
+```{r, echo=FALSE}
+logistic_model_evaluation <- function(train_data, test_data, formula, threshold = 0.5) {
+  logistic_train <- glm(formula, data = train_data, family = "binomial")
+  
+  logistic_predict_train <- predict(logistic_train, newdata = train_data, type = "response")
+  predicted_classes_train <- ifelse(logistic_predict_train > threshold, "Snow", "Deficit")
+  
+  logistic_predict_test <- predict(logistic_train, newdata = test_data, type = "response")
+  predicted_classes_test <- ifelse(logistic_predict_test > threshold, "Snow", "Deficit")
+  
+  cm_test <- confusionMatrix(as.factor(predicted_classes_test), as.factor(test_data$snow_prediction), 
+                             positive = "Snow")
+  
+  cm_train <- confusionMatrix(as.factor(predicted_classes_train), as.factor(train_data$snow_prediction), 
+                              positive = "Snow")
+  
+  return(list(cm_train = cm_train, cm_test = cm_test, model = logistic_train))
+}
+
+results <- logistic_model_evaluation(data_train, data_test, snow_prediction ~ .)
+logistic_train <- results$model 
+
+logistic_results <- data.frame(
+  sensitivity = c(results$cm_train$byClass["Sensitivity"], results$cm_test$byClass["Sensitivity"]),
+  specificity = c(results$cm_train$byClass["Specificity"], results$cm_test$byClass["Specificity"]),
+  accuracy = c(results$cm_train$overall["Accuracy"], results$cm_test$overall["Accuracy"])
+)
+
+rownames(logistic_results) <- c("data_train", "data_test")
+
+knitr::kable(logistic_results, 
+             align = "cc",
+             caption = "Logistic regression performance metrics",
+             digits = 3) %>%
+  kable_styling(latex_options = "striped", full_width = F) %>%
+  column_spec(1, width = "4cm") %>% 
+  column_spec(2, width = "3cm") %>%
+  column_spec(3, width = "3cm")
+```
+
+Logistic regression on data after oversampling did not show better results.
+```{r, echo=FALSE}
+logistic_model_evaluation_over <- function(oversampled_data_train, test_data, formula, threshold = 0.5) {
+  logistic_train_over <- glm(formula, data = oversampled_data_train, family = "binomial")
+  
+  logistic_predict_train_over <- predict(logistic_train_over, newdata = oversampled_data_train, type = "response")
+  predicted_classes_train_over <- ifelse(logistic_predict_train_over > threshold, "Snow", "Deficit")
+  
+  cm_train <- confusionMatrix(as.factor(predicted_classes_train), as.factor(oversampled_data_train$snow_prediction), 
+                              positive = "Snow")
+  
+  return(list(cm_train = cm_train))
+}
+```
+
+```{r,echo=FALSE}
+exp(coef(logistic_train))
+```
+
+### Interpretable Logistic Regression Analysis
+```{r, echo=FALSE,message=FALSE, results='hide',warning=FALSE}
+str(oversampled_data_train)
+```
+```{r, echo=FALSE, message=FALSE, results='hide', warning=FALSE}
+explainer <- DALEX::explain(
+  model = logistic_train,
+  data = oversampled_data_train[,-9],  
+  y = oversampled_data_train$snow_prediction,
+  label = "Logistic regression"
+)
+```
+```{r,echo=FALSE, message = FALSE, results='hide', warning=FALSE}
+logistic_train_over <- glm(snow_prediction ~ ., data = oversampled_data_train, family = "binomial")
+```
+
+
+```{r,echo=FALSE, message= FALSE, results='hide', warning=FALSE}
+explain_logistic_train_over <- DALEX::explain(
+  model = logistic_train_over,  
+  data = oversampled_data_train[, -9],  
+  y = oversampled_data_train$snow_prediction,
+  label = "Oversampled Logistic Regression"
+)
+```
+The logistic regression model is initialized in the DALEX environment. The model is configured to predict the `snow_prediction` based on training data that has been previously been balanced using oversampling method. The explain object will become the basis for further interpretative analysis of the model.
+
+```{r, echo=FALSE,message=FALSE, results='hide'}
+obs <- oversampled_data_train[60,]
+obs
+```
+The 60th observation from the training set was selected for analysis. This observation will be used to analyze the impact of individual variables on the model output.
+
+```{r, echo=FALSE}
+observation <- oversampled_data_train[1, -9]  
+```
+
+**Ceteris-Paribus Profiles**
+The profile provides a formal tool for assessing the impact of a selected explanatory variable on model predictions by illustrating how changes in that variable, while holding all other variables constant, influence the predicted outcome. For example, the CP profile for `cloudiness` allows to observe how varying levels of cloudiness affect the probability of assignment to a particular class, such as snowfall, for a specific observation.
+
+```{r, echo=FALSE}
+my_custom_function <- function(explainer, observation) {
+  pcp <- predict_profile(explainer = explainer, new_observation = observation)
+  plot(pcp, variables = c("cloudiness"))
+}
+
+my_custom_function(explainer, observation)
+```
+
+While keeping values of all other explanatory variables unchanged, during the days with higher cloudiness, the probability of snowfall is higher.
+The blue point on the graph represents the forecast for the actual value of the `cloudiness` in the analyzed 60th observation.
+```{r, echo=FALSE}
+my_custom_function <- function(explainer, observation) {
+  pcp <- predict_profile(explainer = explainer, new_observation = observation)
+  plot(pcp, variables = c("wind"))
+}
+
+my_custom_function(explainer, observation)
+```
+
+There is a higher probability of snowfall as wind level increase, while keeping values of all other explanatory variables unchanged. The probability that sharply increases while wind approaches 1 suggests that the model is especially sensitive to high wind levels when predicting snowfall.
+```{r, echo=FALSE}
+my_custom_function <- function(explainer, observation) {
+  pcp <- predict_profile(explainer = explainer, new_observation = observation)
+  plot(pcp, variables = c("temperature"))
+}
+
+my_custom_function(explainer, observation)
+```
+
+As the value of temperature increases, the probability of snowfall decreases, ceteris paribus. 
+
+```{r, echo=FALSE}
+pcp <- predict_profile(explainer = explain_logistic_train_over,
+                       new_observation = obs)
+
+
+plotD3(pcp, variables = c("dew_01"), variable_type = "categorical", scale_plot=TRUE, label_margin=70)
+```
+
+The horizontal bar represents the predicted probability of the event modeled by logistic regression for each category. The visible bar indicates that for observations `dew_01`, the model predicts a higher probability of the event compared to the situation in the absence of dew, ceteris paribus.
+
+```{r, echo=FALSE}
+pcp <- predict_profile(explainer = explain_logistic_train_over,
+                       new_observation = obs)
+
+
+plotD3(pcp, variables = c("frost_01"), variable_type = "categorical", scale_plot=TRUE, label_margin=70)
+```
+
+The visible bar indicates that for observations `frost_01`, the model predicts a higher probability of the event compared to the situation in the absence of frost, ceteris paribus.
+
+```{r, echo=FALSE}
+pcp <- predict_profile(explainer = explain_logistic_train_over,
+                       new_observation = obs)
+
+
+plotD3(pcp, variables = c("fog_01"), variable_type = "categorical", scale_plot=TRUE, label_margin=70)
+```
+
+The lack of fog increases the chance of snowfall, which is also confirmed by the decision tree model.
+
+**Partial Dependence Plot (PDP)** PDP generate model predictions across a range of values for a specific variable and then average these predictions, effectively creating averaged Ceteris Paribus profiles. PDPs allow for an examination of the impact of an individual independent variable (or multiple variables) on the model's output, while controlling for the effects of other variables. This approach enables a clearer interpretation of how changes in the selected variable influence the model's predictions, isolated from the interactions and influences of additional factors in the dataset.
+
+```{r, echo=FALSE}
+pdp <- model_profile(explainer = explain_logistic_train_over, variables = "cloudiness")
+plot(pdp)
+```
+
+The line on the graph is clearly rising, suggesting that the more cloud cover, the model is more likely to predict snow..
+
+```{r, echo=FALSE}
+pdp <- model_profile(explainer = explain_logistic_train_over, variables = "temperature")
+plot(pdp)
+```
+
+The observed downward trend indicates that lower temperatures correspond to an increased probability of the model predicting snowfall.
+
+```{r, echo=FALSE}
+pdp <- model_profile(explainer = explain_logistic_train_over, variables = "dew_01", variable_type = "categorical")
+plot(pdp)
+```
+
+There is about a 50% chance of snowfall when there is no dew occured before, that day.
+```{r, echo=FALSE}
+pdp <- model_profile(explainer = explain_logistic_train_over, variables = "snow_cover_01", variable_type = "categorical")
+plot(pdp)
+```
+
+The presence of snow cover indicates around 50% probability of no snowfall that day and over 70% likehood that the snow will be falling.
+```{r echo=FALSE}
+pdp <- model_profile(explainer = explain_logistic_train_over, variables = "rain_01", variable_type = "categorical")
+plot(pdp)
+```
+
+Raining day indicates around 50% probability of no snowfall that day and almost 60% probability that the snow will be falling.
+
+```{r, echo=FALSE}
+pdp <- model_profile(explainer = explain_logistic_train_over, variables = "cloudiness", groups="frost_01")
+plot(pdp, geom = "profiles") + 
+    ggtitle("PCP and PDP for cloudiness")
+```
+
+The graph presents CP profiles (grey lines) for 100 randomly-selected days together with the estimated PD profiles (representing frost or its deficit) for cloudiness. Frost presence has a higher probability with a higher cloud coverage.  For example, high cloudiness might increase the likelihood of frost, that is crucial for agriculture. 
+
+```{r, echo=FALSE}
+pdp <- model_profile(explainer = explain_logistic_train_over, variables = "wind", groups="fog_01")
+plot(pdp, geom = "profiles") + 
+    ggtitle("PCP and PDP for wind")
+```
+
+The lack of fog brings a higher probability for wind occurance. 
+```{r, echo=FALSE}
+pdp <- model_profile(explainer = explain_logistic_train_over, variables = "temperature", groups="snow_cover_01")
+plot(pdp, geom = "profiles") + 
+    ggtitle("PCP and PDP for temperature")
+```
+
+The higher the temperature is, there is a smaller probability of snow coverage occurance. 
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+obs = oversampled_data_train[100,]
+```
+```{r,include = FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+predict(logistic_train_over, obs)
+```
+
+**Break Down profile** The profile might answer the question which variables contribute to the result the most. 
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+bd1 <- predict_parts(explainer = explain_logistic_train_over,
+                    new_observation = obs,
+                    type = "break_down_interactions", 
+                    order = c("cloudiness", "wind", "temperature", "dew_01", "frost_01", "fog_01", "snow_cover_01", "rain_01"))
+p1 <- plot(bd1)
+grid.arrange(p1)
+```
+
+The green and red bars indicate, positive and negative changes in the mean predictions.
+Figure indicates negative contribution for the first three variables. The fact of cloudiness on the level of 0.5375, wind 0.2444, temperature 0.6683 and rain decrease probability of snowfall occurance.
+
+```{r, echo=FALSE}
+bd2 <- predict_parts(explainer = explain_logistic_train_over,
+                    new_observation = obs,
+                    type = "break_down_interactions", 
+                    order = c("dew_01", "frost_01", "fog_01", "snow_cover_01", "rain_01","cloudiness", "wind", "temperature"))
+p2 <- plot(bd2)
+grid.arrange(p2)
+```
+
+The graph indicates higher probability of snowfall in November in Cracow, when there is simultaneously deficit of dew, frost, for and rain, while the lack of snow cover, cloudiness, wind and temperature decrease probability of snowfall that day. 
+
+**SHAP values** These explanations serve to clarify the reasons behind the classification of a specific observation or the prediction of a particular value. A critical aspect of SHAP is its focus on individual observations.
+```{r, echo=FALSE}
+shap <- predict_parts(explainer = explain_logistic_train_over, 
+                      new_observation = obs, 
+                      type = "shap")
+p1 <- plot(shap)
+p2 <- plot(shap, show_boxplots = FALSE) 
+grid.arrange(p1)
+```
+
+Red and green bars indicates the means. Box plots provide a visual summary of the distribution of contributions from each explanatory variable across various orderings. The plot indicates that the most crucial variables in snowfall prediction is rain and the lack of frost. 
+
+### Decision Trees
+
+Entropy and Gini index are two measures used for splitting in decision trees, the default used in the rpart library is the Gini index, the maximum depth of the tree was set to 4. Results with oversampled training set did not show better matrics. 
+```{r, echo=FALSE}
+tree_gini <- rpart(snow_prediction ~ ., data = data_train, method = "class", parms = list(split = "gini"), maxdepth = 4)
+```
+
+```{r, echo=FALSE}
+tree_predict_gini_train <- predict(tree_gini, newdata = data_train, type = "class")
+tree_predict_gini_test <- predict(tree_gini, newdata = data_test, type = "class")
+tree_predict_gini_over <- predict(tree_gini, newdata = oversampled_data_train, type = "class")
+
+cm_train <- confusionMatrix(as.factor(tree_predict_gini_train), as.factor(data_train$snow_prediction), positive = "Snow")
+cm_test <- confusionMatrix(as.factor(tree_predict_gini_test), as.factor(data_test$snow_prediction), positive = "Snow")
+
+tree_results <- data.frame(
+  sensitivity = c(cm_train$byClass["Sensitivity"], cm_test$byClass["Sensitivity"]),
+  specificity = c(cm_train$byClass["Specificity"], cm_test$byClass["Specificity"]),
+  accuracy = c(cm_train$overall["Accuracy"], cm_test$overall["Accuracy"])
+)
+
+rownames(tree_results) <- c("data_train", "data_test")
+
+knitr::kable(tree_results, 
+             align = "cc",
+             caption = "Decision Tree Performance Metrics",
+             digits = 3) %>%
+  kable_styling(latex_options = "striped", full_width = FALSE) %>%
+  column_spec(1, width = "4cm") %>% 
+  column_spec(2, width = "3cm") %>%
+  column_spec(3, width = "3cm")
+```
+
+```{r, echo=FALSE}
+rpart.plot(tree_gini)
+```
+
+Upon examining the labels, it becomes evident e.g. that the root node label indicates a 13% probability of the lack snow cover occur in the event of snowfall or there is 7% probability that there will not be snow if there is snow cover, what indicates 5% from the whole analyzing set. 
+
+### SVM Model
+
+A detailed analysis of three support vector machine models with different kernels: linear, radial and polynomial was performed. All models were trained to predict the occurrence of snowfall using the regularization cost parameter set to 10. The performance was thoroughly assessed and presented using a confusion matrixes, allowing for a deeper understanding of their performance in various aspects of classification. <br>
+The SVM model with a polynomial kernel has the highest accuracy, specificity and sensitivity. That suggests the highest efficiency in identifying snow days and makes it the preferred model for the given problem.
+
+```{r, echo=FALSE}
+svm_model_linear <- svm(snow_prediction ~ ., data = data_train, kernel = "linear", cost = 10)
+
+svm_model_radial <- svm(snow_prediction ~ ., data = data_train, kernel = "radial", cost = 10, positive ="Snow")
+
+svm_model_polynomial <- svm(snow_prediction ~ ., data = data_train, kernel = "polynomial", cost = 10, positive ="Snow")
+```
+
+```{r, echo=FALSE}
+svm_models <- list(svm_model_linear, svm_model_radial, svm_model_polynomial)
+model_names <- c("Linear", "Radial", "Polynomial")
+
+confusion_matrices <- list()
+
+for (i in seq_along(svm_models)) {
+  svm_predict_test <- predict(svm_models[[i]], newdata = data_test)
+  confusion_matrices[[i]] <- confusionMatrix(svm_predict_test, data_test$snow_prediction, positive = "Snow")
+}
+
+svm_results <- data.frame(
+  Model = model_names,
+  Sensitivity = sapply(confusion_matrices, function(cm) cm$byClass["Sensitivity"]),
+  Specificity = sapply(confusion_matrices, function(cm) cm$byClass["Specificity"]),
+  Accuracy = sapply(confusion_matrices, function(cm) cm$overall["Accuracy"])
+)
+
+knitr::kable(svm_results, 
+             align = "c",
+             caption = "SVM Model Performance Metrics",
+             digits = 3) %>%
+  kable_styling(latex_options = "striped", full_width = FALSE) %>%
+  column_spec(1, width = "4cm") %>% 
+  column_spec(2, width = "3cm") %>%
+  column_spec(3, width = "3cm") %>%
+  column_spec(4, width = "3cm")
+
+```
+
+
+### Summary 
+In the context of model development, accuracy was the most critical metric. This measure emphasizes the model's effectiveness in accurately identifying positive cases while minimizing the occurrence of false positives. For this dataset, the accurate classification of days with actual snowfall was paramount, and particular attention was given to avoiding Type I errors (False Positives).
+
+The Logistic Regression model achieved the highest performance in terms of accuracy, sensitivity, and precision, indicating its robustness in correctly identifying snowfall days. However, the Decision Tree model demonstrated the highest precision, effectively classifying snowfall days and minimizing incorrect positive classifications on days without snowfall.
+
+A significant positive influence on the likelihood of snowfall on a given day was the presence of rain. This relationship likely reflects the distinct atmospheric conditions required for each form of precipitation, as they occur within different temperature ranges and rarely coincide.
+
